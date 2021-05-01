@@ -17,6 +17,7 @@
 #include <asm/io.h>
 #include <div64.h>
 #include <linux/math64.h>
+#include <linux/delay.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -571,6 +572,189 @@ int do_size(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	return 0;
 }
 
+// Zephyr >>>
+#define OCTOPOS_MAILBOX_INTR_OFFSET 4
+#define STORAGE_BLOCK_SIZE 64
+#define MAILBOX_QUEUE_MSG_SIZE 64
+#define P_PREVIOUS 0xff
+
+// from octopos_mbox.h
+#define OWNER_MASK (u32) 0x00FFFFFF
+#define QUOTA_MASK (u32) 0xFF000FFF
+#define TIME_MASK  (u32) 0xFFFFF000
+
+// from xmbox_hw.h
+#define XMB_WRITE_REG_OFFSET	0x00	/**< Mbox write register */
+#define XMB_READ_REG_OFFSET	0x08	/**< Mbox read register */
+#define XMB_STATUS_REG_OFFSET	0x10	/**< Mbox status reg  */
+#define XMB_ERROR_REG_OFFSET	0x14	/**< Mbox Error reg  */
+#define XMB_SIT_REG_OFFSET	0x18	/**< Mbox send interrupt threshold register */
+#define XMB_RIT_REG_OFFSET	0x1C	/**< Mbox receive interrupt threshold register */
+#define XMB_IS_REG_OFFSET	0x20	/**< Mbox interrupt status register */
+#define XMB_IE_REG_OFFSET	0x24	/**< Mbox interrupt enable register */
+#define XMB_IP_REG_OFFSET	0x28	/**< Mbox interrupt pending register */
+#define XMB_CTRL_REG_OFFSET	0x2C	/**< Mbox control register */
+#define XMB_STATUS_FIFO_EMPTY	0x00000001 /**< Receive FIFO is Empty */
+#define XMB_STATUS_FIFO_FULL	0x00000002 /**< Send FIFO is Full */
+#define XMB_STATUS_STA		0x00000004 /**< Send FIFO Threshold Status */
+#define XMB_STATUS_RTA		0x00000008 /**< Receive FIFO Threshold Status */
+
+// from octopos/mailbox.h and octopos/runtime.h
+#define MAILBOX_NO_LIMIT_VAL			0xFFF
+#define MAILBOX_NO_TIMEOUT_VAL			0xFFF
+#define MAILBOX_MAX_LIMIT_VAL			0xFFE
+#define MAILBOX_MAX_TIMEOUT_VAL			0xFFE
+#define MAILBOX_MIN_PRACTICAL_TIMEOUT_VAL	20
+#define MAILBOX_DEFAULT_TIMEOUT_VAL		60
+
+// https://github.com/Xilinx/embeddedsw/blob/master/lib/bsp/standalone/src/common/xil_io.h
+u32 Xil_In32(u32 Addr)
+{
+	return *(volatile u32 *) Addr;
+}
+
+// https://github.com/Xilinx/embeddedsw/blob/master/lib/bsp/standalone/src/common/xil_io.h
+void Xil_Out32(u32 Addr, u32 Value)
+{
+	volatile u32 *LocalAddr = (volatile u32 *)Addr;
+	*LocalAddr = Value;
+}
+
+// adapted from xmbox_hw.h
+#define XMbox_ReadMBox(BaseAddress)				\
+	Xil_In32(BaseAddress + XMB_READ_REG_OFFSET)
+
+#define XMbox_IsEmptyHw(BaseAddress)				 \
+((Xil_In32(BaseAddress + XMB_STATUS_REG_OFFSET) & XMB_STATUS_FIFO_EMPTY))
+
+// adapted from xmbox.c
+void XMbox_ReadBlocking(u32 Addr, u32 *BufferPtr,
+			u32 RequestedBytes)
+{
+	u32 NumBytes = 0;
+
+	do {
+		while(XMbox_IsEmptyHw(Addr));
+
+		*BufferPtr++ = XMbox_ReadMBox(Addr);
+		NumBytes += 4;
+	} while (NumBytes != RequestedBytes);
+
+}
+
+u16 octopos_mailbox_get_quota_limit(u32 base)
+{
+	return (u16) (Xil_In32(base) >> 12 & 0xfff);
+}
+
+void octopos_mailbox_deduct_and_set_owner(u32 base, u8 owner)
+{
+	u32 reg = Xil_In32(base) - 0x1001;
+	reg = (OWNER_MASK & reg) | owner << 24;
+
+	Xil_Out32(base, reg);
+}
+
+int do_load_octopos(ulong addr, loff_t offset, loff_t len, loff_t *actread)
+{
+	u32 q_storage_data_out = 0xa0007000;
+	u32 q_storage_control = 0xa0006000;
+	int need_repeat = 0;
+	int total = 0;
+	void* buf;
+
+	buf = map_sysmem(addr, len);
+
+	printf("-Zephyr- %s: [0]\r\n", __FUNCTION__);
+repeat:
+	/* wait for os to delegate data queue access */
+	while (0xdeadbeef == Xil_In32(q_storage_control));
+	// printf("-Zephyr- %s: [1]\r\n", __FUNCTION__);
+
+	/* clear octopos control interrupt */
+	Xil_Out32(q_storage_control + OCTOPOS_MAILBOX_INTR_OFFSET, 1);
+
+	/* repeatedly read from mailbox until OS stops delegating the queue */
+	u32 count = octopos_mailbox_get_quota_limit(q_storage_control);
+	count = count / 16;
+
+	// debug >>>
+	// FIXME: there is a bug the last quota read is always 255
+	if (total >= 282030) {
+		count = 114;
+	}
+	// debug <<<
+
+	if (count == MAILBOX_MAX_LIMIT_VAL / 16)
+		need_repeat = 1;
+	else
+		need_repeat = 0;
+	// printf("-Zephyr- %s: [2] %d\r\n", __FUNCTION__, count);
+
+	for (int i = 0; i < (int) count; i++) {
+		/* read from mailbox */
+		// debug >>>
+		if (total >= 282030) {
+			printf("-Zephyr- %s: [2.1] %d\r\n", __FUNCTION__, i);
+		}
+		// debug <<<
+
+		XMbox_ReadBlocking(
+			q_storage_data_out, 
+			(u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE), 
+			MAILBOX_QUEUE_MSG_SIZE);
+
+		// debug >>>
+		// printf("%08x, %08x, %d, %d: \r\n", (u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE),
+		// 	buf, total, i);
+		// for (int ii = 0; ii < 64; ii++) {
+		// 	if (ii % 32 == 0)
+		// 		printf("\r\n");
+		// 	printf("%02x", *((u8*) buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE + ii));
+		// }
+		// printf("\r\n");
+		// if (total == 0 && i == 1) {
+		// 	for (int j = 0; j < 64; j++)
+		// 		printf("-Zephyr- %s: [2.2] %02x\r\n", __FUNCTION__, *((u8*) buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE + j));
+		// }
+		// debug <<<
+
+		// // debug >>>
+		// if (total == 0 && i == 1) {
+		// 	for (int ii = 0; ii <64; ii++) {
+		// 		if (ii % 32 == 0)
+		// 			printf("\r\n");
+		// 		printf("%02x", *((u8*) addr + ii));
+		// 	}
+		// 	printf("\r\n");
+		// }
+		// // debug <<<
+	}
+
+	total += count;
+	// printf("-Zephyr- %s: [3] %d\r\n", __FUNCTION__, total);
+
+	octopos_mailbox_deduct_and_set_owner(q_storage_control, P_PREVIOUS);
+
+	// // debug
+	// // wait for os to delegate data queue access 
+	// while (0xdeadbeef != Xil_In32(q_storage_control));
+
+	if (need_repeat)
+		goto repeat;
+	
+	printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
+
+	// FIXME: ugly solution to return total size
+	// *actread = total;
+	*actread = 18057116;
+
+	unmap_sysmem(buf);
+
+	return CMD_RET_SUCCESS;
+}
+// Zephyr <<<
+
 int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		int fstype)
 {
@@ -589,6 +773,7 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	if (argc > 7)
 		return CMD_RET_USAGE;
 
+	printf("-Zephyr- %s: [0] %d\r\n", __FUNCTION__, argc);
 	if (fs_set_blk_dev(argv[1], (argc >= 3) ? argv[2] : NULL, fstype))
 		return 1;
 
@@ -622,7 +807,9 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		pos = 0;
 
 	time = get_timer(0);
-	ret = fs_read(filename, addr, pos, bytes, &len_read);
+	printf("-Zephyr- %s: [1] %s 0x%08lx %llu %llu\r\n", __FUNCTION__, filename, addr, pos, bytes);
+	// ret = fs_read(filename, addr, pos, bytes, &len_read);
+	ret = do_load_octopos(addr, pos, bytes, &len_read);
 	time = get_timer(time);
 	if (ret < 0)
 		return 1;
@@ -634,6 +821,15 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		puts(")");
 	}
 	puts("\n");
+
+	// // Zephyr >>>
+	// for (int ii = 0; ii <256*64; ii++) {
+	// 	if (ii % 32 == 0)
+	// 		printf("\r\n");
+	// 	printf("%02x", *((u8*) addr + ii));
+	// }
+	// printf("\r\n");
+	// // Zephyr <<<
 
 	env_set_hex("fileaddr", addr);
 	env_set_hex("filesize", len_read);

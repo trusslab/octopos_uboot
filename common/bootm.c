@@ -835,6 +835,10 @@ static const void *boot_get_kernel(cmd_tbl_t *cmdtp, int flag, int argc,
 	/* check image type, for FIT images get FIT kernel node */
 	*os_data = *os_len = 0;
 	buf = map_sysmem(img_addr, 0);
+
+	printf("-Zephyr- %s: [0] %08x, %08x\r\n", __FUNCTION__, img_addr, buf);
+	printf("-Zephyr- %s: [0.1] %d\r\n", __FUNCTION__, genimg_get_format(buf));
+
 	switch (genimg_get_format(buf)) {
 #if defined(CONFIG_IMAGE_FORMAT_LEGACY)
 	case IMAGE_FORMAT_LEGACY:
@@ -911,6 +915,8 @@ static const void *boot_get_kernel(cmd_tbl_t *cmdtp, int flag, int argc,
 	}
 
 	debug("   kernel data at 0x%08lx, len = 0x%08lx (%ld)\n",
+	      *os_data, *os_len, *os_len);
+	printf("-Zephyr- %s: [1] 0x%08lx, len = 0x%08lx (%ld)\n", __FUNCTION__,
 	      *os_data, *os_len, *os_len);
 
 	return buf;
