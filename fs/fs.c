@@ -574,8 +574,8 @@ int do_size(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 
 // Zephyr >>>
 #define OCTOPOS_MAILBOX_INTR_OFFSET 4
-#define STORAGE_BLOCK_SIZE 64
-#define MAILBOX_QUEUE_MSG_SIZE 64
+#define STORAGE_BLOCK_SIZE 512
+#define MAILBOX_QUEUE_MSG_SIZE_LARGE 512
 #define P_PREVIOUS 0xff
 
 // from octopos_mbox.h
@@ -676,16 +676,16 @@ repeat:
 
 	/* repeatedly read from mailbox until OS stops delegating the queue */
 	u32 count = octopos_mailbox_get_quota_limit(q_storage_control);
-	count = count / 16;
+	count = count / 128;
 
 	// debug >>>
 	// FIXME: there is a bug the last quota read is always 255
-	if (total >= 282030) {
-		count = 114;
-	}
+	// if (total >= 282030) {
+	// 	count = 114;
+	// }
 	// debug <<<
 
-	if (count == MAILBOX_MAX_LIMIT_VAL / 16)
+	if (count == MAILBOX_MAX_LIMIT_VAL / 128)
 		need_repeat = 1;
 	else
 		need_repeat = 0;
@@ -694,15 +694,15 @@ repeat:
 	for (int i = 0; i < (int) count; i++) {
 		/* read from mailbox */
 		// debug >>>
-		if (total >= 282030) {
-			printf("-Zephyr- %s: [2.1] %d\r\n", __FUNCTION__, i);
-		}
+		// if (total >= 282030) {
+		// 	printf("-Zephyr- %s: [2.1] %d\r\n", __FUNCTION__, i);
+		// }
 		// debug <<<
 
 		XMbox_ReadBlocking(
 			q_storage_data_out, 
-			(u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE), 
-			MAILBOX_QUEUE_MSG_SIZE);
+			(u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE_LARGE), 
+			MAILBOX_QUEUE_MSG_SIZE_LARGE);
 
 		// debug >>>
 		// printf("%08x, %08x, %d, %d: \r\n", (u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE),
@@ -740,14 +740,14 @@ repeat:
 	// // wait for os to delegate data queue access 
 	// while (0xdeadbeef != Xil_In32(q_storage_control));
 
+	printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
+	
 	if (need_repeat)
 		goto repeat;
-	
-	printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
 
 	// FIXME: ugly solution to return total size
-	// *actread = total;
-	*actread = 18057116;
+	*actread = total;
+	// *actread = 18057116;
 
 	unmap_sysmem(buf);
 
