@@ -757,11 +757,11 @@ int do_load_octopos(ulong addr, loff_t offset, loff_t len, loff_t *actread)
 
 	buf = map_sysmem(addr, len);
 
-	printf("-Zephyr- %s: [0]\r\n", __FUNCTION__);
+	// printf("-Zephyr- %s: [0]\r\n", __FUNCTION__);
 repeat:
 	/* wait for os to delegate data queue access */
 	while (0xdeadbeef == Xil_In32(q_storage_control));
-	printf("-Zephyr- %s: [1]\r\n", __FUNCTION__);
+	// printf("-Zephyr- %s: [1]\r\n", __FUNCTION__);
 
 	/* clear octopos control interrupt */
 	Xil_Out32(q_storage_control + OCTOPOS_MAILBOX_INTR_OFFSET, 1);
@@ -828,7 +828,7 @@ repeat:
 
 	octopos_mailbox_deduct_and_set_owner(q_storage_control, P_PREVIOUS);
 
-	printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
+	// printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
 
 	if (need_repeat)
 		goto repeat;
@@ -859,7 +859,7 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	if (argc > 7)
 		return CMD_RET_USAGE;
 
-	printf("-Zephyr- %s: [0] %d\r\n", __FUNCTION__, argc);
+	// printf("-Zephyr- %s: [0] %d\r\n", __FUNCTION__, argc);
 
 	if (fs_set_blk_dev(argv[1], (argc >= 3) ? argv[2] : NULL, fstype))
 		return 1;
@@ -898,12 +898,12 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 			(argc > 4) ? argv[4] : "");
 #endif
 	time = get_timer(0);
-	printf("-Zephyr- %s: [1] %s 0x%08lx %llu %llu\r\n", __FUNCTION__, filename, addr, pos, bytes);
+	// printf("-Zephyr- %s: [1] %s 0x%08lx %llu %llu\r\n", __FUNCTION__, filename, addr, pos, bytes);
 	if (strcmp(filename, "/boot.scr") == 0) {
-		printf("-Zephyr- %s: [1.1]\r\n", __FUNCTION__);
+		// printf("-Zephyr- %s: [1.1]\r\n", __FUNCTION__);
 		ret = fs_read(filename, addr, pos, bytes, &len_read);
 	} else {
-		printf("-Zephyr- %s: [1.2]\r\n", __FUNCTION__);
+		// printf("-Zephyr- %s: [1.2]\r\n", __FUNCTION__);
 		ret = do_load_octopos(addr, pos, bytes, &len_read);
 	}
 	time = get_timer(time);
