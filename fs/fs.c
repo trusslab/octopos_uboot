@@ -740,10 +740,11 @@ u16 octopos_mailbox_get_quota_limit(u32 base)
 
 void octopos_mailbox_deduct_and_set_owner(u32 base, u8 owner)
 {
-	u32 reg = Xil_In32(base) - 0x1001;
-	reg = (OWNER_MASK & reg) | owner << 24;
-
-	Xil_Out32(base, reg);
+//	u32 reg = Xil_In32(base) - 0x1001;
+//	reg = (OWNER_MASK & reg) | owner << 24;
+//
+//	Xil_Out32(base, reg);
+	Xil_Out32(base, 0xFF000000);
 }
 
 int do_load_octopos(ulong addr, loff_t offset, loff_t len, loff_t *actread)
@@ -766,9 +767,11 @@ repeat:
 	/* clear octopos control interrupt */
 	Xil_Out32(q_storage_control + OCTOPOS_MAILBOX_INTR_OFFSET, 1);
 
+#ifdef FINITE_DELEGATION
 	/* repeatedly read from mailbox until OS stops delegating the queue */
 	u32 count = octopos_mailbox_get_quota_limit(q_storage_control);
 	count = count / 128;
+#endif
 
 	// debug >>>
 	// FIXME: there is a bug the last quota read is always 255
@@ -777,13 +780,25 @@ repeat:
 	// }
 	// debug <<<
 
+#ifdef FINITE_DELEGATION
 	if (count == MAILBOX_MAX_LIMIT_VAL / 128)
 		need_repeat = 1;
 	else
 		need_repeat = 0;
 	// printf("-Zephyr- %s: [2] %d\r\n", __FUNCTION__, count);
+#endif
 
+#ifdef FINITE_DELEGATION
 	for (int i = 0; i < (int) count; i++) {
+#else
+// Zephyr note: len is always zero. uboot doesn't know kernel size
+//	int block_size = len / MAILBOX_QUEUE_MSG_SIZE_LARGE +
+//		(len % MAILBOX_QUEUE_MSG_SIZE_LARGE != 0);
+	// printf("[2.5] %d\r\n", block_size);
+	int block_size = 12621;
+	for (int i = 0; i < block_size; i++) {	
+	// printf("[3] %i\r\n", i);
+#endif
 		/* read from mailbox */
 		// debug >>>
 		// if (total >= 282030) {
@@ -823,17 +838,23 @@ repeat:
 		// // debug <<<
 	}
 
+#ifdef FINITE_DELEGATION
 	total += count;
+#else
+	total = block_size;
+#endif
 	// printf("-Zephyr- %s: [3] %d\r\n", __FUNCTION__, total);
 
 	octopos_mailbox_deduct_and_set_owner(q_storage_control, P_PREVIOUS);
 
 	// printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
 
+#ifdef FINITE_DELEGATION
 	if (need_repeat)
 		goto repeat;
+#endif
 
-	*actread = total;
+	*actread = total * MAILBOX_QUEUE_MSG_SIZE_LARGE;
 
 	unmap_sysmem(buf);
 
