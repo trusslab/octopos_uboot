@@ -795,7 +795,7 @@ repeat:
 //	int block_size = len / MAILBOX_QUEUE_MSG_SIZE_LARGE +
 //		(len % MAILBOX_QUEUE_MSG_SIZE_LARGE != 0);
 	// printf("[2.5] %d\r\n", block_size);
-	int block_size = 12621;
+	int block_size = 12620;
 	for (int i = 0; i < block_size; i++) {	
 	// printf("[3] %i\r\n", i);
 #endif
