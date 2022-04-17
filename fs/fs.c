@@ -795,7 +795,7 @@ repeat:
 //	int block_size = len / MAILBOX_QUEUE_MSG_SIZE_LARGE +
 //		(len % MAILBOX_QUEUE_MSG_SIZE_LARGE != 0);
 	// printf("[2.5] %d\r\n", block_size);
-	int block_size = 12620;
+	int block_size = 12621;
 	for (int i = 0; i < block_size; i++) {	
 	// printf("[3] %i\r\n", i);
 #endif
@@ -871,7 +871,8 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	loff_t bytes;
 	loff_t pos;
 	loff_t len_read;
-	int ret;
+	loff_t len_read_bootimg;
+	int ret, ret_bootimg;
 	unsigned long time;
 	char *ep;
 
@@ -919,10 +920,22 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 			(argc > 4) ? argv[4] : "");
 #endif
 	time = get_timer(0);
+	// Zephyr
+	//char tmp_fbuf[10000000];
 	// printf("-Zephyr- %s: [1] %s 0x%08lx %llu %llu\r\n", __FUNCTION__, filename, addr, pos, bytes);
 	if (strcmp(filename, "/boot.scr") == 0) {
-		// printf("-Zephyr- %s: [1.1]\r\n", __FUNCTION__);
 		ret = fs_read(filename, addr, pos, bytes, &len_read);
+		/* at time of loading boot.scr, load all sec_hw images */
+		if (fs_set_blk_dev(argv[1], (argc >= 3) ? argv[2] : NULL, fstype)) {
+			printf("-zephyr- fs_set_blk_dev failure\r\n");
+			return 1;
+		}
+		ret_bootimg = fs_read("/octopos_partition_0_data", 0x30000000, 0, 0, &len_read_bootimg);
+		//ret_bootimg = fs_read("/octopos_partition_0_data", tmp_fbuf, 0, 0, &len_read_bootimg);
+		printf("-zephyr- %s: %d %d %d\r\n", __FUNCTION__, ret, ret_bootimg, len_read_bootimg);
+		//printf("%08x\r\n", *((unsigned int*) 0x30100000));
+		//memcpy(0x30000000, tmp_fbuf, len_read_bootimg);
+		flush_cache(0x30000000, len_read_bootimg);
 	} else {
 		// printf("-Zephyr- %s: [1.2]\r\n", __FUNCTION__);
 		ret = do_load_octopos(addr, pos, bytes, &len_read);
