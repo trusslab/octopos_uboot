@@ -864,6 +864,7 @@ repeat:
 
 // Zephyr >>>
 /* FIXME: this comes from octopos/storage.h and storage/storage.c */
+#define NUM_PARTITIONS		6
 #define MAX_PARTITION_NAME_LEN 64
 #define STORAGE_KEY_SIZE	32
 #define STORAGE_METADATA_SIZE	STORAGE_KEY_SIZE + 32
