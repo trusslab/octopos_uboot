@@ -865,9 +865,8 @@ repeat:
 // Zephyr >>>
 /* FIXME: this comes from octopos/storage.h and storage/storage.c */
 #define NUM_PARTITIONS		6
-#define MAX_PARTITION_NAME_LEN 64
 #define STORAGE_KEY_SIZE	32
-#define STORAGE_METADATA_SIZE	STORAGE_KEY_SIZE + 32
+#define STORAGE_METADATA_SIZE	64
 #define STORAGE_BLOCK_SIZE	512  /* bytes */
 #define STORAGE_BOOT_PARTITION_SIZE			100000
 #define STORAGE_UNTRUSTED_ROOT_FS_PARTITION_SIZE	300000
@@ -958,7 +957,7 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	if (strcmp(filename, "/boot.scr") == 0) {
 		ret = fs_read(filename, addr, pos, bytes, &len_read);
 		/* at time of loading boot.scr, load all sec_hw images */
-		for (int i = 0; i < NUM_PARTITIONS; i++) {
+		for (uint32_t i = 0; i < NUM_PARTITIONS; i++) {
 			size = partition_sizes[i];
 			base = partition_base[i];
 			metabase = RAM_ROOT_PARTITION_METADATA_BASE + i * STORAGE_METADATA_SIZE;
@@ -990,8 +989,12 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 				return 1;
 			}
 
+			printf("[1] %08x\r\n", metabase);
+			memset(metabase, 0, STORAGE_METADATA_SIZE);
+			printf("[2] %08x\r\n", metabase);
 			ret_bootimg = fs_read(create_name, metabase, 0, 4, &len_read_bootimg);
-			printf("%s: %d create(%d %d)\r\n", __FUNCTION__, i, ret_bootimg, len_read_bootimg);
+			printf("%s: %d create(%08x %d %d)\r\n", __FUNCTION__, i, 
+					metabase, ret_bootimg, len_read_bootimg);
 			if (ret_bootimg != 0 || len_read_bootimg == 0) {
 				/* no file by create_name */
 				memset(metabase, 0, STORAGE_METADATA_SIZE);
@@ -1006,7 +1009,8 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 			}
 
 		}
-		flush_cache(0x30000000, len_read_bootimg);
+		flush_cache(0x30000000, 0xfffffff);
+		flush_cache(RAM_ROOT_PARTITION_METADATA_BASE, 0xffffff);
 	} else {
 		// printf("-Zephyr- %s: [1.2]\r\n", __FUNCTION__);
 		ret = do_load_octopos(addr, pos, bytes, &len_read);
