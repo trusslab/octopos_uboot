@@ -1,3 +1,9 @@
+// Some macros and functions are adapted from https://github.com/Xilinx/embeddedsw
+/******************************************************************************
+* Copyright (c) 2014 - 2021 Xilinx, Inc.  All rights reserved.
+* SPDX-License-Identifier: MIT
+******************************************************************************/
+
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
@@ -6,6 +12,7 @@
 #include <config.h>
 #include <errno.h>
 #include <common.h>
+#include <env.h>
 #include <mapmem.h>
 #include <part.h>
 #include <ext4fs.h>
@@ -17,6 +24,7 @@
 #include <asm/io.h>
 #include <div64.h>
 #include <linux/math64.h>
+#include <efi_loader.h>
 #include <linux/delay.h>
 
 DECLARE_GLOBAL_DATA_PTR;
@@ -91,6 +99,11 @@ static inline int fs_write_unsupported(const char *filename, void *buf,
 	return -1;
 }
 
+static inline int fs_ln_unsupported(const char *filename, const char *target)
+{
+	return -1;
+}
+
 static inline void fs_close_unsupported(void)
 {
 }
@@ -155,6 +168,7 @@ struct fstype_info {
 	void (*closedir)(struct fs_dir_stream *dirs);
 	int (*unlink)(const char *filename);
 	int (*mkdir)(const char *dirname);
+	int (*ln)(const char *filename, const char *target);
 };
 
 static struct fstype_info fstypes[] = {
@@ -169,7 +183,7 @@ static struct fstype_info fstypes[] = {
 		.exists = fat_exists,
 		.size = fat_size,
 		.read = fat_read_file,
-#ifdef CONFIG_FAT_WRITE
+#if CONFIG_IS_ENABLED(FAT_WRITE)
 		.write = file_fat_write,
 		.unlink = fat_unlink,
 		.mkdir = fat_mkdir,
@@ -182,9 +196,11 @@ static struct fstype_info fstypes[] = {
 		.opendir = fat_opendir,
 		.readdir = fat_readdir,
 		.closedir = fat_closedir,
+		.ln = fs_ln_unsupported,
 	},
 #endif
-#ifdef CONFIG_FS_EXT4
+
+#if CONFIG_IS_ENABLED(FS_EXT4)
 	{
 		.fstype = FS_TYPE_EXT,
 		.name = "ext4",
@@ -197,8 +213,10 @@ static struct fstype_info fstypes[] = {
 		.read = ext4_read_file,
 #ifdef CONFIG_CMD_EXT4_WRITE
 		.write = ext4_write_file,
+		.ln = ext4fs_create_link,
 #else
 		.write = fs_write_unsupported,
+		.ln = fs_ln_unsupported,
 #endif
 		.uuid = ext4fs_uuid,
 		.opendir = fs_opendir_unsupported,
@@ -222,6 +240,7 @@ static struct fstype_info fstypes[] = {
 		.opendir = fs_opendir_unsupported,
 		.unlink = fs_unlink_unsupported,
 		.mkdir = fs_mkdir_unsupported,
+		.ln = fs_ln_unsupported,
 	},
 #endif
 #ifdef CONFIG_CMD_UBIFS
@@ -240,6 +259,7 @@ static struct fstype_info fstypes[] = {
 		.opendir = fs_opendir_unsupported,
 		.unlink = fs_unlink_unsupported,
 		.mkdir = fs_mkdir_unsupported,
+		.ln = fs_ln_unsupported,
 	},
 #endif
 #ifdef CONFIG_FS_BTRFS
@@ -258,6 +278,7 @@ static struct fstype_info fstypes[] = {
 		.opendir = fs_opendir_unsupported,
 		.unlink = fs_unlink_unsupported,
 		.mkdir = fs_mkdir_unsupported,
+		.ln = fs_ln_unsupported,
 	},
 #endif
 	{
@@ -275,6 +296,7 @@ static struct fstype_info fstypes[] = {
 		.opendir = fs_opendir_unsupported,
 		.unlink = fs_unlink_unsupported,
 		.mkdir = fs_mkdir_unsupported,
+		.ln = fs_ln_unsupported,
 	},
 };
 
@@ -290,6 +312,19 @@ static struct fstype_info *fs_get_info(int fstype)
 
 	/* Return the 'unsupported' sentinel */
 	return info;
+}
+
+/**
+ * fs_get_type() - Get type of current filesystem
+ *
+ * Return: filesystem type
+ *
+ * Returns filesystem type representing the current filesystem, or
+ * FS_TYPE_ANY for any unrecognised filesystem.
+ */
+int fs_get_type(void)
+{
+	return fs_type;
 }
 
 /**
@@ -374,7 +409,7 @@ int fs_set_blk_dev_with_part(struct blk_desc *desc, int part)
 	return -1;
 }
 
-static void fs_close(void)
+void fs_close(void)
 {
 	struct fstype_info *info = fs_get_info(fs_type);
 
@@ -398,7 +433,6 @@ int fs_ls(const char *dirname)
 
 	ret = info->ls(dirname);
 
-	fs_type = FS_TYPE_ANY;
 	fs_close();
 
 	return ret;
@@ -430,12 +464,55 @@ int fs_size(const char *filename, loff_t *size)
 	return ret;
 }
 
-int fs_read(const char *filename, ulong addr, loff_t offset, loff_t len,
-	    loff_t *actread)
+#ifdef CONFIG_LMB
+/* Check if a file may be read to the given address */
+static int fs_read_lmb_check(const char *filename, ulong addr, loff_t offset,
+			     loff_t len, struct fstype_info *info)
+{
+	struct lmb lmb;
+	int ret;
+	loff_t size;
+	loff_t read_len;
+
+	/* get the actual size of the file */
+	ret = info->size(filename, &size);
+	if (ret)
+		return ret;
+	if (offset >= size) {
+		/* offset >= EOF, no bytes will be written */
+		return 0;
+	}
+	read_len = size - offset;
+
+	/* limit to 'len' if it is smaller */
+	if (len && len < read_len)
+		read_len = len;
+
+	lmb_init_and_reserve(&lmb, gd->bd, (void *)gd->fdt_blob);
+	lmb_dump_all(&lmb);
+
+	if (lmb_alloc_addr(&lmb, addr, read_len) == addr)
+		return 0;
+
+	printf("** Reading file would overwrite reserved memory **\n");
+	return -ENOSPC;
+}
+#endif
+
+static int _fs_read(const char *filename, ulong addr, loff_t offset, loff_t len,
+		    int do_lmb_check, loff_t *actread)
 {
 	struct fstype_info *info = fs_get_info(fs_type);
 	void *buf;
 	int ret;
+
+#ifdef CONFIG_LMB
+	if (do_lmb_check) {
+		ret = fs_read_lmb_check(filename, addr, offset, len, info);
+		if (ret)
+			return ret;
+	}
+#endif
 
 	/*
 	 * We don't actually know how many bytes are being read, since len==0
@@ -451,6 +528,12 @@ int fs_read(const char *filename, ulong addr, loff_t offset, loff_t len,
 	fs_close();
 
 	return ret;
+}
+
+int fs_read(const char *filename, ulong addr, loff_t offset, loff_t len,
+	    loff_t *actread)
+{
+	return _fs_read(filename, addr, offset, len, 0, actread);
 }
 
 int fs_write(const char *filename, ulong addr, loff_t offset, loff_t len,
@@ -533,7 +616,6 @@ int fs_unlink(const char *filename)
 
 	ret = info->unlink(filename);
 
-	fs_type = FS_TYPE_ANY;
 	fs_close();
 
 	return ret;
@@ -547,7 +629,22 @@ int fs_mkdir(const char *dirname)
 
 	ret = info->mkdir(dirname);
 
-	fs_type = FS_TYPE_ANY;
+	fs_close();
+
+	return ret;
+}
+
+int fs_ln(const char *fname, const char *target)
+{
+	struct fstype_info *info = fs_get_info(fs_type);
+	int ret;
+
+	ret = info->ln(fname, target);
+
+	if (ret < 0) {
+		printf("** Unable to create link %s -> %s **\n", fname, target);
+		ret = -1;
+	}
 	fs_close();
 
 	return ret;
@@ -572,7 +669,6 @@ int do_size(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	return 0;
 }
 
-// Zephyr >>>
 #define OCTOPOS_MAILBOX_INTR_OFFSET 4
 #define STORAGE_BLOCK_SIZE 512
 #define MAILBOX_QUEUE_MSG_SIZE_LARGE 512
@@ -649,111 +745,104 @@ u16 octopos_mailbox_get_quota_limit(u32 base)
 
 void octopos_mailbox_deduct_and_set_owner(u32 base, u8 owner)
 {
-	u32 reg = Xil_In32(base) - 0x1001;
-	reg = (OWNER_MASK & reg) | owner << 24;
-
-	Xil_Out32(base, reg);
+	Xil_Out32(base, 0xFF000000);
 }
 
 int do_load_octopos(ulong addr, loff_t offset, loff_t len, loff_t *actread)
 {
+	/* FIXME: hard coded address */
 	u32 q_storage_data_out = 0xa0007000;
-	u32 q_storage_control = 0xa0006000;
+	u32 q_storage_control = 0xa0080000;
+
 	int need_repeat = 0;
 	int total = 0;
 	void* buf;
 
 	buf = map_sysmem(addr, len);
 
-	printf("-Zephyr- %s: [0]\r\n", __FUNCTION__);
 repeat:
 	/* wait for os to delegate data queue access */
 	while (0xdeadbeef == Xil_In32(q_storage_control));
-	// printf("-Zephyr- %s: [1]\r\n", __FUNCTION__);
 
 	/* clear octopos control interrupt */
 	Xil_Out32(q_storage_control + OCTOPOS_MAILBOX_INTR_OFFSET, 1);
 
+#ifdef FINITE_DELEGATION
 	/* repeatedly read from mailbox until OS stops delegating the queue */
 	u32 count = octopos_mailbox_get_quota_limit(q_storage_control);
 	count = count / 128;
+#endif
 
-	// debug >>>
-	// FIXME: there is a bug the last quota read is always 255
-	// if (total >= 282030) {
-	// 	count = 114;
-	// }
-	// debug <<<
+#ifdef FINITE_DELEGATION
 
 	if (count == MAILBOX_MAX_LIMIT_VAL / 128)
 		need_repeat = 1;
 	else
 		need_repeat = 0;
-	// printf("-Zephyr- %s: [2] %d\r\n", __FUNCTION__, count);
+#endif
 
+#ifdef FINITE_DELEGATION
 	for (int i = 0; i < (int) count; i++) {
-		/* read from mailbox */
-		// debug >>>
-		// if (total >= 282030) {
-		// 	printf("-Zephyr- %s: [2.1] %d\r\n", __FUNCTION__, i);
-		// }
-		// debug <<<
-
+#else
+// len is always zero. uboot doesn't know kernel size
+//	int block_size = len / MAILBOX_QUEUE_MSG_SIZE_LARGE +
+//		(len % MAILBOX_QUEUE_MSG_SIZE_LARGE != 0);
+	int block_size = 12623;
+	for (int i = 0; i < block_size; i++) {	
+#endif
 		XMbox_ReadBlocking(
-			q_storage_data_out, 
-			(u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE_LARGE), 
+			q_storage_data_out,
+			(u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE_LARGE),
 			MAILBOX_QUEUE_MSG_SIZE_LARGE);
-
-		// debug >>>
-		// printf("%08x, %08x, %d, %d: \r\n", (u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE),
-		// 	buf, total, i);
-		// for (int ii = 0; ii < 64; ii++) {
-		// 	if (ii % 32 == 0)
-		// 		printf("\r\n");
-		// 	printf("%02x", *((u8*) buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE + ii));
-		// }
-		// printf("\r\n");
-		// if (total == 0 && i == 1) {
-		// 	for (int j = 0; j < 64; j++)
-		// 		printf("-Zephyr- %s: [2.2] %02x\r\n", __FUNCTION__, *((u8*) buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE + j));
-		// }
-		// debug <<<
-
-		// // debug >>>
-		// if (total == 0 && i == 1) {
-		// 	for (int ii = 0; ii <64; ii++) {
-		// 		if (ii % 32 == 0)
-		// 			printf("\r\n");
-		// 		printf("%02x", *((u8*) addr + ii));
-		// 	}
-		// 	printf("\r\n");
-		// }
-		// // debug <<<
 	}
 
+#ifdef FINITE_DELEGATION
 	total += count;
-	// printf("-Zephyr- %s: [3] %d\r\n", __FUNCTION__, total);
+#else
+	total = block_size;
+#endif
 
 	octopos_mailbox_deduct_and_set_owner(q_storage_control, P_PREVIOUS);
 
-	// // debug
-	// // wait for os to delegate data queue access 
-	// while (0xdeadbeef != Xil_In32(q_storage_control));
-
-	printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
-	
+#ifdef FINITE_DELEGATION
 	if (need_repeat)
 		goto repeat;
+#endif
 
-	// FIXME: ugly solution to return total size
-	*actread = total;
-	// *actread = 18057116;
+	*actread = total * MAILBOX_QUEUE_MSG_SIZE_LARGE;
+
 
 	unmap_sysmem(buf);
 
 	return CMD_RET_SUCCESS;
 }
-// Zephyr <<<
+
+/* FIXME: this comes from octopos/storage.h and storage/storage.c */
+#define NUM_PARTITIONS		6
+#define STORAGE_KEY_SIZE	32
+#define STORAGE_METADATA_SIZE	64
+#define STORAGE_BLOCK_SIZE	512  /* bytes */
+#define STORAGE_BOOT_PARTITION_SIZE			100000
+#define STORAGE_UNTRUSTED_ROOT_FS_PARTITION_SIZE	300000
+#define RAM_ROOT_PARTITION_METADATA_BASE 0x25000000
+#define RAM_ROOT_PARTITION_BASE 0x30000000
+#define RAM_UNTRUSTED_PARTITION_BASE (RAM_ROOT_PARTITION_BASE + STORAGE_BOOT_PARTITION_SIZE * STORAGE_BLOCK_SIZE)
+#define RAM_ENCLAVE_PARTITION_1_BASE (RAM_UNTRUSTED_PARTITION_BASE + STORAGE_UNTRUSTED_ROOT_FS_PARTITION_SIZE * STORAGE_BLOCK_SIZE)
+#define RAM_ENCLAVE_PARTITION_2_BASE (RAM_ENCLAVE_PARTITION_1_BASE + 100 * STORAGE_BLOCK_SIZE)
+#define RAM_ENCLAVE_PARTITION_3_BASE (RAM_ENCLAVE_PARTITION_2_BASE + 100 * STORAGE_BLOCK_SIZE)
+#define RAM_ENCLAVE_PARTITION_4_BASE (RAM_ENCLAVE_PARTITION_3_BASE + 100 * STORAGE_BLOCK_SIZE)
+
+uint32_t partition_sizes[NUM_PARTITIONS] = {STORAGE_BOOT_PARTITION_SIZE,
+	STORAGE_UNTRUSTED_ROOT_FS_PARTITION_SIZE, 100, 100, 100, 100};
+
+uint32_t partition_base[NUM_PARTITIONS] = {
+	RAM_ROOT_PARTITION_BASE,
+	RAM_UNTRUSTED_PARTITION_BASE,
+	RAM_ENCLAVE_PARTITION_1_BASE,
+	RAM_ENCLAVE_PARTITION_2_BASE,
+	RAM_ENCLAVE_PARTITION_3_BASE,
+	RAM_ENCLAVE_PARTITION_4_BASE
+};
 
 int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		int fstype)
@@ -764,16 +853,21 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	loff_t bytes;
 	loff_t pos;
 	loff_t len_read;
-	int ret;
+	loff_t len_read_bootimg;
+	int ret, ret_bootimg;
 	unsigned long time;
 	char *ep;
+	uint32_t size, base, metabase;
+	uint32_t creation_tag;
+	char data_name[256];
+	char create_name[256];
+	char keys_name[256];
 
 	if (argc < 2)
 		return CMD_RET_USAGE;
 	if (argc > 7)
 		return CMD_RET_USAGE;
 
-	printf("-Zephyr- %s: [0] %d\r\n", __FUNCTION__, argc);
 	if (fs_set_blk_dev(argv[1], (argc >= 3) ? argv[2] : NULL, fstype))
 		return 1;
 
@@ -806,10 +900,73 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	else
 		pos = 0;
 
+#ifdef CONFIG_CMD_BOOTEFI
+	efi_set_bootdev(argv[1], (argc > 2) ? argv[2] : "",
+			(argc > 4) ? argv[4] : "");
+#endif
 	time = get_timer(0);
-	printf("-Zephyr- %s: [1] %s 0x%08lx %llu %llu\r\n", __FUNCTION__, filename, addr, pos, bytes);
-	// ret = fs_read(filename, addr, pos, bytes, &len_read);
-	ret = do_load_octopos(addr, pos, bytes, &len_read);
+
+	if (strcmp(filename, "/boot.scr") == 0) {
+		ret = fs_read(filename, addr, pos, bytes, &len_read);
+		/* at time of loading boot.scr, load all sec_hw images */
+		for (uint32_t i = 0; i < NUM_PARTITIONS; i++) {
+			size = partition_sizes[i];
+			base = partition_base[i];
+			metabase = RAM_ROOT_PARTITION_METADATA_BASE + i * STORAGE_METADATA_SIZE;
+
+			memset(data_name, 0x0, 256);
+			sprintf(data_name, "/octopos_partition_%d_data", i);
+
+			memset(create_name, 0x0, 256);
+			sprintf(create_name, "/octopos_partition_%d_create", i);
+
+			memset(keys_name, 0x0, 256);
+			sprintf(keys_name, "/octopos_partition_%d_keys", i);
+
+			if (fs_set_blk_dev(argv[1], (argc >= 3) ? argv[2] : NULL, fstype)) {
+				printf("FATAL: fs_set_blk_dev failure\r\n");
+				return 1;
+			}
+
+			ret_bootimg = fs_read(data_name, base, 0, 0, &len_read_bootimg);
+			printf("%s: %d data(%d %d)\r\n", __FUNCTION__, i, ret_bootimg, len_read_bootimg);
+			if (ret_bootimg != 0 || len_read_bootimg == 0) {
+				/* no file by data_name */
+				memset(base, 0, size);
+				printf("%s: partition %d data does not exist\r\n", __FUNCTION__, i);
+			}
+			
+			if (fs_set_blk_dev(argv[1], (argc >= 3) ? argv[2] : NULL, fstype)) {
+				printf("FATAL: fs_set_blk_dev failure\r\n");
+				return 1;
+			}
+
+			printf("[1] %08x\r\n", metabase);
+			memset(metabase, 0, STORAGE_METADATA_SIZE);
+			printf("[2] %08x\r\n", metabase);
+			ret_bootimg = fs_read(create_name, metabase, 0, 4, &len_read_bootimg);
+			printf("%s: %d create(%08x %d %d)\r\n", __FUNCTION__, i, 
+					metabase, ret_bootimg, len_read_bootimg);
+			if (ret_bootimg != 0 || len_read_bootimg == 0) {
+				/* no file by create_name */
+				memset(metabase, 0, STORAGE_METADATA_SIZE);
+				printf("%s: partition %d create does not exist\r\n", __FUNCTION__, i);
+			} else {
+				if (*((uint32_t*) metabase) != 1) {
+					memset(metabase, 0, STORAGE_METADATA_SIZE);
+					printf("%s: bad create tag(%u)\r\n", 
+							__FUNCTION__, 
+							*((uint32_t*) metabase));
+				}	
+			}
+
+		}
+		flush_cache(0x30000000, 0xfffffff);
+		flush_cache(RAM_ROOT_PARTITION_METADATA_BASE, 0xffffff);
+	} else {
+		ret = do_load_octopos(addr, pos, bytes, &len_read);
+	}
+
 	time = get_timer(time);
 	if (ret < 0)
 		return 1;
@@ -821,15 +978,6 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		puts(")");
 	}
 	puts("\n");
-
-	// // Zephyr >>>
-	// for (int ii = 0; ii <256*64; ii++) {
-	// 	if (ii % 32 == 0)
-	// 		printf("\r\n");
-	// 	printf("%02x", *((u8*) addr + ii));
-	// }
-	// printf("\r\n");
-	// // Zephyr <<<
 
 	env_set_hex("fileaddr", addr);
 	env_set_hex("filesize", len_read);
@@ -947,6 +1095,8 @@ int do_fs_type(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
 	else
 		printf("%s\n", info->name);
 
+	fs_close();
+
 	return CMD_RET_SUCCESS;
 }
 
@@ -981,6 +1131,21 @@ int do_mkdir(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		printf("** Unable to create a directory \"%s\" **\n", argv[3]);
 		return 1;
 	}
+
+	return 0;
+}
+
+int do_ln(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
+	  int fstype)
+{
+	if (argc != 5)
+		return CMD_RET_USAGE;
+
+	if (fs_set_blk_dev(argv[1], argv[2], fstype))
+		return 1;
+
+	if (fs_ln(argv[3], argv[4]))
+		return 1;
 
 	return 0;
 }
