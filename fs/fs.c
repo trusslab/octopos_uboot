@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2021 - 2023, The OctopOS Authors, All rights reserved.
+ */
+
 // Some macros and functions are adapted from https://github.com/Xilinx/embeddedsw
 /******************************************************************************
 * Copyright (c) 2014 - 2021 Xilinx, Inc.  All rights reserved.
@@ -679,7 +684,8 @@ int do_size(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 #define QUOTA_MASK (u32) 0xFF000FFF
 #define TIME_MASK  (u32) 0xFFFFF000
 
-// from xmbox_hw.h
+// adapted from
+// https://github.com/Xilinx/embeddedsw/blob/master/XilinxProcessorIPLib/drivers/mbox/src/xmbox_hw.h
 #define XMB_WRITE_REG_OFFSET	0x00	/**< Mbox write register */
 #define XMB_READ_REG_OFFSET	0x08	/**< Mbox read register */
 #define XMB_STATUS_REG_OFFSET	0x10	/**< Mbox status reg  */
@@ -703,12 +709,14 @@ int do_size(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 #define MAILBOX_MIN_PRACTICAL_TIMEOUT_VAL	20
 #define MAILBOX_DEFAULT_TIMEOUT_VAL		60
 
+// adapted from 
 // https://github.com/Xilinx/embeddedsw/blob/master/lib/bsp/standalone/src/common/xil_io.h
 u32 Xil_In32(u32 Addr)
 {
 	return *(volatile u32 *) Addr;
 }
 
+// adapted from 
 // https://github.com/Xilinx/embeddedsw/blob/master/lib/bsp/standalone/src/common/xil_io.h
 void Xil_Out32(u32 Addr, u32 Value)
 {
@@ -716,14 +724,16 @@ void Xil_Out32(u32 Addr, u32 Value)
 	*LocalAddr = Value;
 }
 
-// adapted from xmbox_hw.h
+// adapted from
+// https://github.com/Xilinx/embeddedsw/blob/master/XilinxProcessorIPLib/drivers/mbox/src/xmbox_hw.h
 #define XMbox_ReadMBox(BaseAddress)				\
 	Xil_In32(BaseAddress + XMB_READ_REG_OFFSET)
 
 #define XMbox_IsEmptyHw(BaseAddress)				 \
 ((Xil_In32(BaseAddress + XMB_STATUS_REG_OFFSET) & XMB_STATUS_FIFO_EMPTY))
 
-// adapted from xmbox.c
+// adapted from 
+// https://github.com/Xilinx/embeddedsw/blob/master/XilinxProcessorIPLib/drivers/mbox/src/xmbox.c
 void XMbox_ReadBlocking(u32 Addr, u32 *BufferPtr,
 			u32 RequestedBytes)
 {
@@ -784,9 +794,6 @@ repeat:
 #ifdef FINITE_DELEGATION
 	for (int i = 0; i < (int) count; i++) {
 #else
-// len is always zero. uboot doesn't know kernel size
-//	int block_size = len / MAILBOX_QUEUE_MSG_SIZE_LARGE +
-//		(len % MAILBOX_QUEUE_MSG_SIZE_LARGE != 0);
 	int block_size = 12623;
 	for (int i = 0; i < block_size; i++) {	
 #endif
