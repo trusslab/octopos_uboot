@@ -351,6 +351,8 @@ const char *bootdelay_process(void)
 
 	if (IS_ENABLED(CONFIG_OF_CONTROL))
 		process_fdt_options(gd->fdt_blob);
+
+	bootdelay = -2;
 	stored_bootdelay = bootdelay;
 
 	return s;
