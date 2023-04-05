@@ -1,3 +1,9 @@
+// Some macros and functions are adapted from https://github.com/Xilinx/embeddedsw
+/******************************************************************************
+* Copyright (c) 2014 - 2021 Xilinx, Inc.  All rights reserved.
+* SPDX-License-Identifier: MIT
+******************************************************************************/
+
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
@@ -663,7 +669,6 @@ int do_size(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 	return 0;
 }
 
-// Zephyr >>>
 #define OCTOPOS_MAILBOX_INTR_OFFSET 4
 #define STORAGE_BLOCK_SIZE 512
 #define MAILBOX_QUEUE_MSG_SIZE_LARGE 512
@@ -740,10 +745,6 @@ u16 octopos_mailbox_get_quota_limit(u32 base)
 
 void octopos_mailbox_deduct_and_set_owner(u32 base, u8 owner)
 {
-//	u32 reg = Xil_In32(base) - 0x1001;
-//	reg = (OWNER_MASK & reg) | owner << 24;
-//
-//	Xil_Out32(base, reg);
 	Xil_Out32(base, 0xFF000000);
 }
 
@@ -752,17 +753,16 @@ int do_load_octopos(ulong addr, loff_t offset, loff_t len, loff_t *actread)
 	/* FIXME: hard coded address */
 	u32 q_storage_data_out = 0xa0007000;
 	u32 q_storage_control = 0xa0080000;
+
 	int need_repeat = 0;
 	int total = 0;
 	void* buf;
 
 	buf = map_sysmem(addr, len);
 
-	// printf("-Zephyr- %s: [0]\r\n", __FUNCTION__);
 repeat:
 	/* wait for os to delegate data queue access */
 	while (0xdeadbeef == Xil_In32(q_storage_control));
-	// printf("-Zephyr- %s: [1]\r\n", __FUNCTION__);
 
 	/* clear octopos control interrupt */
 	Xil_Out32(q_storage_control + OCTOPOS_MAILBOX_INTR_OFFSET, 1);
@@ -773,69 +773,27 @@ repeat:
 	count = count / 128;
 #endif
 
-	// debug >>>
-	// FIXME: there is a bug the last quota read is always 255
-	// if (total >= 282030) {
-	// 	count = 114;
-	// }
-	// debug <<<
-
 #ifdef FINITE_DELEGATION
+
 	if (count == MAILBOX_MAX_LIMIT_VAL / 128)
 		need_repeat = 1;
 	else
 		need_repeat = 0;
-	// printf("-Zephyr- %s: [2] %d\r\n", __FUNCTION__, count);
 #endif
 
 #ifdef FINITE_DELEGATION
 	for (int i = 0; i < (int) count; i++) {
 #else
-// Zephyr note: len is always zero. uboot doesn't know kernel size
+// len is always zero. uboot doesn't know kernel size
 //	int block_size = len / MAILBOX_QUEUE_MSG_SIZE_LARGE +
 //		(len % MAILBOX_QUEUE_MSG_SIZE_LARGE != 0);
-	// printf("[2.5] %d\r\n", block_size);
 	int block_size = 12623;
 	for (int i = 0; i < block_size; i++) {	
-	// printf("[3] %i\r\n", i);
 #endif
-		/* read from mailbox */
-		// debug >>>
-		// if (total >= 282030) {
-		// 	printf("-Zephyr- %s: [2.1] %d\r\n", __FUNCTION__, i);
-		// }
-		// debug <<<
-
 		XMbox_ReadBlocking(
 			q_storage_data_out,
 			(u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE_LARGE),
 			MAILBOX_QUEUE_MSG_SIZE_LARGE);
-
-		// debug >>>
-		// printf("%08x, %08x, %d, %d: \r\n", (u8*) (buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE),
-		// 	buf, total, i);
-		// for (int ii = 0; ii < 64; ii++) {
-		// 	if (ii % 32 == 0)
-		// 		printf("\r\n");
-		// 	printf("%02x", *((u8*) buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE + ii));
-		// }
-		// printf("\r\n");
-		// if (total == 0 && i == 1) {
-		// 	for (int j = 0; j < 64; j++)
-		// 		printf("-Zephyr- %s: [2.2] %02x\r\n", __FUNCTION__, *((u8*) buf + (total + i) * MAILBOX_QUEUE_MSG_SIZE + j));
-		// }
-		// debug <<<
-
-		// // debug >>>
-		// if (total == 0 && i == 1) {
-		// 	for (int ii = 0; ii <64; ii++) {
-		// 		if (ii % 32 == 0)
-		// 			printf("\r\n");
-		// 		printf("%02x", *((u8*) addr + ii));
-		// 	}
-		// 	printf("\r\n");
-		// }
-		// // debug <<<
 	}
 
 #ifdef FINITE_DELEGATION
@@ -843,11 +801,8 @@ repeat:
 #else
 	total = block_size;
 #endif
-	// printf("-Zephyr- %s: [3] %d\r\n", __FUNCTION__, total);
 
 	octopos_mailbox_deduct_and_set_owner(q_storage_control, P_PREVIOUS);
-
-	// printf("-Zephyr- %s: [4] %d\r\n", __FUNCTION__, total);
 
 #ifdef FINITE_DELEGATION
 	if (need_repeat)
@@ -856,13 +811,12 @@ repeat:
 
 	*actread = total * MAILBOX_QUEUE_MSG_SIZE_LARGE;
 
+
 	unmap_sysmem(buf);
 
 	return CMD_RET_SUCCESS;
 }
-// Zephyr <<<
 
-// Zephyr >>>
 /* FIXME: this comes from octopos/storage.h and storage/storage.c */
 #define NUM_PARTITIONS		6
 #define STORAGE_KEY_SIZE	32
@@ -889,7 +843,7 @@ uint32_t partition_base[NUM_PARTITIONS] = {
 	RAM_ENCLAVE_PARTITION_3_BASE,
 	RAM_ENCLAVE_PARTITION_4_BASE
 };
-// Zephyr <<<
+
 int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		int fstype)
 {
@@ -913,8 +867,6 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		return CMD_RET_USAGE;
 	if (argc > 7)
 		return CMD_RET_USAGE;
-
-	// printf("-Zephyr- %s: [0] %d\r\n", __FUNCTION__, argc);
 
 	if (fs_set_blk_dev(argv[1], (argc >= 3) ? argv[2] : NULL, fstype))
 		return 1;
@@ -953,7 +905,7 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 			(argc > 4) ? argv[4] : "");
 #endif
 	time = get_timer(0);
-	// Zephyr
+
 	if (strcmp(filename, "/boot.scr") == 0) {
 		ret = fs_read(filename, addr, pos, bytes, &len_read);
 		/* at time of loading boot.scr, load all sec_hw images */
@@ -1012,9 +964,9 @@ int do_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
 		flush_cache(0x30000000, 0xfffffff);
 		flush_cache(RAM_ROOT_PARTITION_METADATA_BASE, 0xffffff);
 	} else {
-		// printf("-Zephyr- %s: [1.2]\r\n", __FUNCTION__);
 		ret = do_load_octopos(addr, pos, bytes, &len_read);
 	}
+
 	time = get_timer(time);
 	if (ret < 0)
 		return 1;
